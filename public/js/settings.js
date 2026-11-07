@@ -8,7 +8,7 @@ const KEY = 'ideagen.settings.v1';
 export const ROLES = ['distill', 'expand', 'combine', 'judge', 'summary', 'research', 'x', 'brief'];
 export const PROVIDER_IDS = ['openrouter', 'anthropic', 'openai', 'azure', 'ollama', 'mlx', 'lmstudio', 'custom'];
 
-const SONNET = 'openrouter:anthropic/claude-sonnet-5.5';
+const SONNET = 'claude-cli:sonnet';
 export const DEFAULTS = {
   keys: {},
   baseUrls: { ollama: 'http://localhost:11434', mlx: 'http://localhost:8080/v1', lmstudio: 'http://localhost:1234/v1', azure: '', custom: '' },

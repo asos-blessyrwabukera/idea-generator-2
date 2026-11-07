@@ -30,6 +30,7 @@ Each board has a **goal** that every step works toward. Seed it with a thought, 
   - *Report*: totals, cross-board conclusions, every project with its start command, and one card per board. Exports to Markdown.
 - **Exhibition mode.** Fullscreen, the camera follows new ideas, and visitors type seeds. It runs together with automatic mode.
 - **Providers per role.** Every role has its own model, written `provider:model`. The roles are distill, branch, cross, judge, summary, research scout, X scout and project brief.
+  - **Claude CLI (default):** `claude-cli:sonnet`, `claude-cli:opus` or `claude-cli:haiku` run your locally installed `claude` command on your own subscription login. No API key. Needs `claude` on PATH and a prior login; set `CLAUDE_CLI_PATH` when starting the server to use another binary (it is never taken from browser settings). At most 3 run at once, calls do not count toward the dollar limits, and it cannot search X.
   - **Hosted:** OpenRouter, Anthropic (official SDK) and OpenAI.
   - **Copilot models:** neither GitHub Copilot nor Microsoft Copilot has a completion API for apps, and GitHub Models was retired on 30 July 2026. GitHub points to Microsoft Foundry, so the models behind both Copilots are reached through the Azure OpenAI / Microsoft Foundry provider.
   - **Local:** Ollama, MLX (`mlx_lm.server`), LM Studio, or any OpenAI-compatible URL.

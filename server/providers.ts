@@ -6,9 +6,11 @@
 // localStorage and are pushed to the server, which keeps them in memory only.
 // Environment variables are a fallback for keys.
 
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
 
-export type ProviderId = 'openrouter' | 'anthropic' | 'openai' | 'azure' | 'ollama' | 'mlx' | 'lmstudio' | 'custom';
+export type ProviderId = 'claude-cli' | 'openrouter' | 'anthropic' | 'openai' | 'azure' | 'ollama' | 'mlx' | 'lmstudio' | 'custom';
 export type Role = 'distill' | 'expand' | 'combine' | 'judge' | 'summary' | 'research' | 'x' | 'brief';
 export const ROLES: Role[] = ['distill', 'expand', 'combine', 'judge', 'summary', 'research', 'x', 'brief'];
 
@@ -21,7 +23,7 @@ export type AppSettings = {
   maxUsdPerDay: number;
 };
 
-const SONNET = 'openrouter:anthropic/claude-sonnet-5.5';
+const SONNET = 'claude-cli:sonnet';
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   keys: {},
   baseUrls: {
@@ -39,7 +41,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 
 type ProviderDef = {
   label: string;
-  type: 'openai' | 'anthropic' | 'ollama';
+  type: 'openai' | 'anthropic' | 'ollama' | 'cli';
   base?: string;
   env?: string;
   needsKey: boolean;
@@ -50,6 +52,10 @@ type ProviderDef = {
 };
 
 export const PROVIDERS: Record<ProviderId, ProviderDef> = {
+  'claude-cli': {
+    label: 'Claude CLI (your subscription)', type: 'cli', needsKey: false, local: true,
+    note: 'Runs the local `claude` command with your own login, so no API key. It runs "claude" from PATH; to use another binary, start the server with CLAUDE_CLI_PATH set. Models: opus, sonnet, haiku, or a full model name. Cannot search X.',
+  },
   openrouter: { label: 'OpenRouter', type: 'openai', base: 'https://openrouter.ai/api/v1', env: 'OPENROUTER_API_KEY', needsKey: true, search: true },
   anthropic: { label: 'Anthropic', type: 'anthropic', env: 'ANTHROPIC_API_KEY', needsKey: true },
   openai: { label: 'OpenAI', type: 'openai', base: 'https://api.openai.com/v1', env: 'OPENAI_API_KEY', needsKey: true },
@@ -74,7 +80,7 @@ export function parseModel(ref: string): { provider: ProviderId; model: string }
 export function mergeAppSettings(raw: any): AppSettings {
   const s = (v: unknown, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
   const out: AppSettings = structuredClone(DEFAULT_APP_SETTINGS);
-  for (const p of Object.keys(PROVIDERS) as ProviderId[]) {
+  for (const p of (Object.keys(PROVIDERS) as ProviderId[]).filter((id) => PROVIDERS[id].type !== 'cli')) {
     if (s(raw?.keys?.[p])) out.keys[p] = s(raw.keys[p]);
     if (typeof raw?.baseUrls?.[p] === 'string') out.baseUrls[p] = s(raw.baseUrls[p]).replace(/\/+$/, '');
   }
@@ -291,6 +297,92 @@ async function anthropicChat(settings: AppSettings, model: string, r: ChatReques
   throw new ProviderError('provider_error', `Anthropic ${model} failed`);
 }
 
+const CLI_ALIASES = ['opus', 'sonnet', 'haiku'];
+
+/**
+ * The command to run is chosen by whoever starts the server (CLAUDE_CLI_PATH), never by app
+ * settings: those arrive over HTTP, and a command taken from them would be remote code execution.
+ */
+function cliCommand(): string {
+  return process.env.CLAUDE_CLI_PATH || 'claude';
+}
+
+/** Split a command line into words, keeping "quoted paths with spaces" together. */
+function splitCommand(command: string): string[] {
+  return (command.match(/"[^"]*"|\S+/g) ?? []).map((w) => w.replace(/^"|"$/g, ''));
+}
+
+const MAX_CLI_PROCESSES = 3;
+let cliRunning = 0;
+const cliWaiting: (() => void)[] = [];
+
+/** Each `claude` process is heavy, and a subscription has rate limits: run a few at a time, queue the rest. */
+async function withCliSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (cliRunning >= MAX_CLI_PROCESSES) await new Promise<void>((resolve) => cliWaiting.push(resolve));
+  else cliRunning++;
+  try {
+    return await work();
+  } finally {
+    const next = cliWaiting.shift();
+    if (next) next();
+    else cliRunning--;
+  }
+}
+
+function runCli(command: string, args: string[], stdin: string, timeoutMs: number) {
+  return withCliSlot(() => spawnCli(command, args, stdin, timeoutMs));
+}
+
+function spawnCli(command: string, args: string[], stdin: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  const [bin, ...prefix] = splitCommand(command);
+  return new Promise((resolve, reject) => {
+    // Neutral cwd: the CLI would otherwise load this repo's CLAUDE.md into every completion.
+    const child = spawn(bin, [...prefix, ...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: timeoutMs, cwd: tmpdir() });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ stdout, stderr, code }));
+    child.stdin.on('error', () => {});
+    child.stdin.end(stdin);
+  });
+}
+
+async function claudeCliChat(settings: AppSettings, model: string, r: ChatRequest): Promise<ChatResult> {
+  if (r.plugins) throw new ProviderError('no_search', 'The Claude CLI cannot search X; use an OpenRouter model such as openrouter:x-ai/grok-4.3');
+  const command = cliCommand();
+  // Plain text in, JSON out: no tools, no saved session, so it is one stateless completion on the user's subscription.
+  const args = [
+    '-p', '--output-format', 'json', '--model', model, '--system-prompt', r.system,
+    '--json-schema', JSON.stringify(r.schema), '--tools', '', '--no-session-persistence',
+    // Keep the user's settings, hooks, skills and MCP servers out of a plain completion (faster, no leaked context).
+    '--setting-sources', '', '--disable-slash-commands', '--strict-mcp-config',
+  ];
+  let run: Awaited<ReturnType<typeof runCli>>;
+  try {
+    run = await runCli(command, args, r.user, 180_000);
+  } catch (e: any) {
+    throw new ProviderError('unreachable', `Claude CLI "${command}" could not start (${e?.code ?? e.message}). Is it installed and on PATH?`);
+  }
+  let envelope: any;
+  try {
+    envelope = JSON.parse(run.stdout);
+  } catch {
+    throw new ProviderError('provider_error', `Claude CLI exited ${run.code}: ${(run.stderr || run.stdout).slice(0, 300)}`);
+  }
+  if (envelope.is_error) {
+    const message = String(envelope.result ?? 'unknown error').slice(0, 300);
+    if (/not logged in|\/login|authenticat/i.test(message)) throw new ProviderError('not_logged_in', `Claude CLI: ${message}. Run "claude" once in a terminal and log in.`);
+    throw new ProviderError('provider_error', `Claude CLI: ${message}`);
+  }
+  try {
+    return { value: envelope.structured_output ?? extractJson(String(envelope.result ?? '')), costUsd: 0 };
+  } catch (e: any) {
+    throw new ProviderError('provider_error', `Claude CLI ${model}: ${e.message}`);
+  }
+}
+
 /** A chat function that routes every request by its "provider:model" string. */
 export function makeChat(getSettings: () => AppSettings): ChatFn {
   return async (r) => {
@@ -298,6 +390,7 @@ export function makeChat(getSettings: () => AppSettings): ChatFn {
     const { provider, model } = parseModel(r.model);
     if (!model) throw new ProviderError('bad_model', `No model given in "${r.model}"`);
     const def = PROVIDERS[provider];
+    if (def.type === 'cli') return claudeCliChat(settings, model, r);
     if (def.type === 'anthropic') return anthropicChat(settings, model, r);
     if (def.type === 'ollama') return ollamaChat(settings, model, r);
     return openaiChat(settings, provider, model, r);
@@ -319,6 +412,13 @@ export async function listModels(settings: AppSettings, p: ProviderId): Promise<
     }
   };
   try {
+    if (p === 'claude-cli') {
+      const run = await runCli(cliCommand(), ['--version'], '', 10_000).catch((e: any) => {
+        throw new ProviderError('unreachable', `Claude CLI "${cliCommand()}" could not start (${e?.code ?? e.message}). Is it installed and on PATH?`);
+      });
+      if (run.code !== 0) throw new ProviderError('unreachable', `Claude CLI exited ${run.code}: ${run.stderr.slice(0, 200)}`);
+      return CLI_ALIASES;
+    }
     if (p === 'anthropic') {
       const out: string[] = [];
       for await (const m of anthropicClient(key).models.list()) out.push(m.id);

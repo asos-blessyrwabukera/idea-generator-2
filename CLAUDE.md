@@ -30,6 +30,7 @@ Node 25 runs the TypeScript server directly; the frontend is vanilla ES modules.
 
 - **The medal comes from code, not the model:** a sum of three 1–5 scores, bronze from 9, silver from 11, gold from 13 (`score.js`). Left uncalibrated, an LLM jury gave 3/3 to the bare word "fire"; the calibration test keeps that from happening here.
 - **Never put integer `minimum`/`maximum` in a JSON schema.** Anthropic rejects them. Put the range in the description and clamp in code.
+- **Claude CLI provider (`claude-cli:<alias>`, the default):** spawns `claude -p --output-format json --json-schema …` with the prompt on stdin, no tools, no saved session, `--setting-sources ''`, `--disable-slash-commands`, `--strict-mcp-config`, from a temp cwd. Without that isolation the user's CLAUDE.md and hooks leak into ideas and slow each call. The executable comes ONLY from the `CLAUDE_CLI_PATH` environment variable: settings arrive over HTTP, so taking a command from them would be remote code execution (a test guards this). Max 3 processes at once. Cost is reported as 0 (subscription).
 - **Anthropic native: send no `temperature`.** API version 2026-10-21 rejects it. Use effort `low`. The SDK sends the key as a Bearer token.
 - **OpenRouter: send `reasoning:{enabled:false}`** and retry without it on a 400 that mentions reasoning (some models insist on reasoning).
 - **X scout:** a lead is kept only if its URL is in the search engine's `url_citation` annotations. Never trust a URL the model wrote. Only OpenRouter (Grok) can search X.
@@ -45,6 +46,11 @@ Node 25 runs the TypeScript server directly; the frontend is vanilla ES modules.
   - strong ideas: mean 9.8
   - run-to-run spread 0
   - about $0.003 per judgement
+- **`claude-cli:sonnet` as judge passes calibration** (2026-11-07):
+  - weak ideas: mean 4.6, max 5
+  - strong ideas: mean 9.7, none reached gold
+  - run-to-run spread 1
+  - about 10-15 s per judgement, no dollar cost (subscription)
 - **`ollama:qwen3:8b` as judge FAILS calibration:**
   - gave bronze to "Solpaneler på taken"
   - gave gold to 5 of 10 strong runs

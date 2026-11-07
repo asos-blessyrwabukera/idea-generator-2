@@ -18,6 +18,19 @@ Run it from the repo folder: `node bin/ideagen.ts <command>` (or `npm run -s ide
 5. `top <boardId> --min-medal silver --limit 5` shows the best ideas, best first.
 6. `project <ideaId>` writes a project folder (CLAUDE.md, README, brief) for an idea worth building and prints its path.
 
+## Beyond the basic loop
+
+Run `ideagen --help` for every command. The ones an agent most often needs:
+
+- `board update <id> --judge-guidance "<what the jury should value>"` steers scoring; `--model <role>=<provider:model>` changes a model for one board; `--steps-per-hour` limits `evolve`.
+- `board summary <id>` writes themes, strongest ideas, gaps and next steps onto the board. `board export <id>` prints the whole board as Markdown.
+- `idea show <id>` gives an idea with its parents and lineage. `judge <id>` re-judges one, for example after an earlier failure (the error JSON names the `ideaId`).
+- `idea announce <id> --to <boardIds|all>` copies an idea to other boards, judged against their goals. `idea spinoff <id>` makes the idea the goal of a new board.
+- `seed <boardId> --file -` reads long text from stdin instead of the command line.
+- `report --markdown` and `report synthesize` summarise across every board.
+
+`evolve` may end with `"stopped": {"reason": "hourly" | "board_budget" | "global_budget"}`. That is a limit, not a failure; tell the user rather than working around it.
+
 ## Reading the scores
 
 Each idea gets originality, feasibility and impact, 1-5 each, with a one-sentence `reason` and keywords. `sum` is out of 15. The medal comes from the sum, never from the model: bronze from 9, silver from 11, gold from 13. Gold is rare on purpose, so silver is a strong result. A bare topic such as "electric cars" scores about 5 and gets no medal.
@@ -28,3 +41,4 @@ Each idea gets originality, feasibility and impact, 1-5 each, with a one-sentenc
 - Do not loop `evolve` unattended. Each step is several calls against the user's subscription limits. Ask before running more than about 20 steps.
 - The database is shared with the web app (`data/ideas.db`, or `DB_FILE`). Do not run `evolve` on a board whose autopilot is on in the app.
 - Exit code 1 with code `not_logged_in` means the user must run `claude` once in a terminal and log in.
+- `board delete`, `idea delete` and `template delete` need `--yes`. Only pass it when the user asked for that deletion.

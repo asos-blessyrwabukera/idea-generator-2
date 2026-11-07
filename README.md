@@ -53,15 +53,24 @@ The server listens on 127.0.0.1 only. There is no login, and keys pass through i
 
 ## Command line and agent skill
 
-`bin/ideagen.ts` runs the same engine headless, for scripts and agents: no server needed, JSON on stdout, errors as JSON on stderr, exit codes 0 ok / 1 failed / 2 usage / 3 not found.
+`bin/ideagen.ts` runs the same engine headless, for scripts and agents, and does everything the web app does except drag ideas around the canvas, follow live events and open project folders in Finder. No server needed: JSON on stdout (Markdown for `board export` and `report --markdown`), errors as JSON on stderr, progress as JSON lines on stderr, exit codes 0 ok / 1 failed / 2 usage or refused / 3 not found.
 
 ```bash
 npm run -s ideagen -- board create --goal "Fewer car trips in cities" --lang en
 npm run -s ideagen -- seed 1 "Bus stops that double as parcel lockers"
 npm run -s ideagen -- evolve 1 --steps 5
 npm run -s ideagen -- top 1 --min-medal silver --limit 5
+npm run -s ideagen -- board update 1 --judge-guidance "Favour cheap pilots" --model judge=claude-cli:opus
+npm run -s ideagen -- idea announce 7 --to all
+npm run -s ideagen -- report --markdown --lang en > report.md
 npm run -s ideagen -- --help
 ```
+
+- Command groups: `board` (create, list, show, update, delete, export, summary), ideas (`seed`, `expand`, `cross`, `judge`, `top`, `evolve`, `project`, and `idea` show, medal, delete, announce, spinoff), `leads` (list, refresh, seed, dismiss), `dashboard`, `keyword`, `report` (and `report synthesize`), `template`, `settings show` and `providers` (list, test).
+- `evolve` stops early, without failing, at the board's steps per hour or a daily dollar limit, and keeps its finished steps if a later one fails.
+- Deleting a board, idea or template needs `--yes`.
+- `seed --file <path>` or `--file -` (stdin) avoids shell quoting for long text.
+- App settings: point `IDEAGEN_SETTINGS` at a JSON file in the same shape the browser sends (models per role, `projectsRoot`, `maxUsdPerDay`). Keys are better left in environment variables. `settings show` never prints a key.
 
 It shares `data/ideas.db` with the web app (override with `DB_FILE`). `skills/idea-generator/SKILL.md` teaches an agent the workflow; copy that folder into `~/.claude/skills/` to install it.
 

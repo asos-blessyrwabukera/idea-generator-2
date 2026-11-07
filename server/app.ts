@@ -8,6 +8,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import type { Repo, Idea, Board } from './db.ts';
 import { AppError, type Engine } from './engine.ts';
 import type { Autopilot } from './autopilot.ts';
+import { checkRequest } from './origin-guard.ts';
 import { PROVIDERS, keySource, listModels, mergeAppSettings, type AppSettings, type ProviderId } from './providers.ts';
 import { fitness, medal, scoreSum } from '../public/js/score.js';
 
@@ -187,7 +188,7 @@ export function createHandler({ repo, engine, autopilot, runtime, publicDir }: D
       return providerStatus();
     }],
     ['GET', /^\/api\/providers$/, () => providerStatus()],
-    ['POST', /^\/api\/providers\/([a-z]+)\/models$/, async ([id]) => {
+    ['POST', /^\/api\/providers\/([a-z-]+)\/models$/, async ([id]) => {
       if (!(id in PROVIDERS)) throw new AppError(404, 'not_found', 'Unknown provider');
       try {
         return { models: await listModels(runtime.get(), id as ProviderId) };
@@ -323,6 +324,8 @@ export function createHandler({ repo, engine, autopilot, runtime, publicDir }: D
 
   return async function handler(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    const refusal = checkRequest(req);
+    if (refusal) return send(res, refusal.status, { error: refusal.message, code: refusal.code });
     try {
       if (!url.pathname.startsWith('/api/')) {
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });

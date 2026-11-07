@@ -51,6 +51,20 @@ All app settings live in the browser (localStorage), including API keys, models 
 
 The server listens on 127.0.0.1 only. There is no login, and keys pass through it, so **do not expose it** as is.
 
+## Command line and agent skill
+
+`bin/ideagen.ts` runs the same engine headless, for scripts and agents: no server needed, JSON on stdout, errors as JSON on stderr, exit codes 0 ok / 1 failed / 2 usage / 3 not found.
+
+```bash
+npm run -s ideagen -- board create --goal "Fewer car trips in cities" --lang en
+npm run -s ideagen -- seed 1 "Bus stops that double as parcel lockers"
+npm run -s ideagen -- evolve 1 --steps 5
+npm run -s ideagen -- top 1 --min-medal silver --limit 5
+npm run -s ideagen -- --help
+```
+
+It shares `data/ideas.db` with the web app (override with `DB_FILE`). `skills/idea-generator/SKILL.md` teaches an agent the workflow; copy that folder into `~/.claude/skills/` to install it.
+
 ## License
 
 MIT

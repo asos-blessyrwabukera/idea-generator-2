@@ -2,48 +2,8 @@
 // against an in-memory database and a fake model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { openDb } from '../server/db.ts';
-import { createEngine } from '../server/engine.ts';
-import { runCli } from '../server/cli.ts';
-import { DEFAULT_APP_SETTINGS, ProviderError, type ChatRequest } from '../server/providers.ts';
-
-type Session = { run: (...argv: string[]) => Promise<{ code: number; out: any; err: any; rawOut: string }>; chatCalls: ChatRequest[] };
-
-function session(options: { failWith?: Error } = {}): Session {
-  const chatCalls: ChatRequest[] = [];
-  const chat = async (r: ChatRequest) => {
-    chatCalls.push(r);
-    if (options.failWith) throw options.failWith;
-    const gold = /GOLD/.test(r.user);
-    const value =
-      r.schemaName === 'expand' ? { ideas: [1, 2, 3].map((k) => ({ title: `Child ${chatCalls.length}.${k}`, pitch: 'p' })) }
-      : r.schemaName === 'judgement' ? { reason: 'Because.', originality: gold ? 5 : 2, feasibility: gold ? 5 : 2, impact: gold ? 5 : 2, keywords: ['k'] }
-      : r.schemaName === 'brief' ? { name: 'Project', slug: 'project', oneLiner: 'o', problem: 'p', audience: 'a', mvp: ['m'], outOfScope: ['o'], stack: 's', firstSteps: ['f'], openQuestions: ['q'], risks: ['r'] }
-      : { title: 'Crossed', pitch: 'c' };
-    return { value, costUsd: 0 };
-  };
-  const repo = openDb(':memory:');
-  const projectsRoot = mkdtempSync(join(tmpdir(), 'ideagen-cli-'));
-  const settings = () => ({ ...structuredClone(DEFAULT_APP_SETTINGS), projectsRoot });
-  const engine = createEngine({ repo, chat, settings, gitInit: false, fetchPage: async () => ({ title: '', text: '' }), fetchPapers: async () => [], reveal: () => {} });
-  const run = async (...argv: string[]) => {
-    let rawOut = '';
-    let rawErr = '';
-    const code = await runCli(argv, { repo, engine, stdout: (s) => (rawOut += s), stderr: (s) => (rawErr += s) });
-    const parse = (s: string) => {
-      try {
-        return s.trim() ? JSON.parse(s) : null;
-      } catch {
-        return null;
-      }
-    };
-    return { code, out: parse(rawOut), err: rawErr.trim() ? JSON.parse(rawErr.trim().split('\n').at(-1)!) : null, rawOut };
-  };
-  return { run, chatCalls };
-}
+import { ProviderError } from '../server/providers.ts';
+import { newBoard, session } from './support/cli-session.ts';
 
 test('board create prints the board as JSON and exits 0', async () => {
   const { run } = session();
@@ -155,4 +115,78 @@ test('--help lists the commands on stdout and exits 0', async () => {
   const { code, rawOut } = await run('--help');
   assert.equal(code, 0);
   for (const word of ['board create', 'seed', 'expand', 'cross', 'top', 'evolve', 'project']) assert.match(rawOut, new RegExp(word));
+});
+
+// ---- batch 1: evolve keeps its results, respects limits; judge; seed failures name the idea
+
+test('evolve reports each step on stderr as it happens', async () => {
+  const { run } = session();
+  const id = await newBoard(run);
+  await run('seed', id, 'one');
+  await run('seed', id, 'two');
+  const { code, out, errLines } = await run('evolve', id, '--steps', '2');
+  assert.equal(code, 0);
+  const progress = errLines.filter((l) => 'step' in l);
+  assert.equal(progress.length, out.steps.length);
+  assert.deepEqual(progress.map((l) => l.step), out.steps.map((_: unknown, n: number) => n + 1));
+});
+
+test('evolve keeps the steps it finished when a later step fails', async () => {
+  const s = session();
+  const id = await newBoard(s.run);
+  await s.run('seed', id, 'one');
+  await s.run('seed', id, 'two');
+  const first = await s.run('evolve', id, '--steps', '1');
+  assert.equal(first.out.steps.length, 1);
+  s.setFailure(new ProviderError('not_logged_in', 'Claude CLI: not logged in'));
+  const { code, out, err } = await s.run('evolve', id, '--steps', '3');
+  assert.equal(code, 1);
+  assert.deepEqual(out.steps, [], 'no step finished, but stdout still says so');
+  assert.equal(out.stopped.code, 'not_logged_in');
+  assert.equal(err.code, 'not_logged_in');
+});
+
+test('evolve stops, without failing, once the board has spent its daily budget', async () => {
+  const { run } = session({ costUsd: 0.6 });
+  const id = await newBoard(run);
+  await run('seed', id, 'one');
+  await run('seed', id, 'two');
+  const { code, out } = await run('evolve', id, '--steps', '5');
+  assert.equal(code, 0);
+  assert.deepEqual(out.steps, []);
+  assert.equal(out.stopped.reason, 'board_budget');
+});
+
+test('evolve also stops at the global daily budget', async () => {
+  const { run } = session({ costUsd: 0.6, settings: { maxUsdPerDay: 1 } });
+  const id = await newBoard(run);
+  await run('board', 'update', id, '--usd-per-day', '100');
+  await run('seed', id, 'one');
+  await run('seed', id, 'two');
+  const { out } = await run('evolve', id, '--steps', '5');
+  assert.equal(out.stopped.reason, 'global_budget');
+});
+
+test('judge re-judges an idea and returns its new score', async () => {
+  const { run, chatCalls } = session();
+  const id = await newBoard(run);
+  const idea = (await run('seed', id, 'GOLD')).out.idea;
+  const before = chatCalls.length;
+  const { code, out } = await run('judge', String(idea.id));
+  assert.equal(code, 0);
+  assert.equal(chatCalls.length, before + 1);
+  assert.equal(out.idea.medal, 'gold');
+});
+
+test('a seed whose judging fails still names the saved idea, so it can be re-judged', async () => {
+  const s = session();
+  const id = await newBoard(s.run);
+  s.setFailure(new ProviderError('not_logged_in', 'nope'));
+  const { code, err } = await s.run('seed', id, 'saved but unjudged');
+  assert.equal(code, 1);
+  assert.ok(Number.isInteger(err.ideaId));
+  s.setFailure(null);
+  const rejudged = await s.run('judge', String(err.ideaId));
+  assert.equal(rejudged.out.idea.title, 'saved but unjudged');
+  assert.equal(rejudged.out.idea.sum, 6);
 });

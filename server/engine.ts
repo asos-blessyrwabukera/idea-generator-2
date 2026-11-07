@@ -73,6 +73,9 @@ type Deps = {
   gitInit?: boolean;
 };
 
+/** A seed that fits in a title is kept as typed; anything longer is rewritten, never cut off. */
+const MAX_TITLE_LENGTH = 120;
+
 export function createEngine(deps: Deps) {
   const { repo } = deps;
   const fetchPage = deps.fetchPage ?? realFetchPage;
@@ -249,7 +252,7 @@ export function createEngine(deps: Deps) {
       const lang = board.config.lang;
       const flow = board.config.flow;
       const url = asUrl(text);
-      let title = text.slice(0, 120);
+      let title = text.slice(0, MAX_TITLE_LENGTH);
       let pitch = '';
       let sourceUrl: string | null = null;
       if (url) {
@@ -265,7 +268,7 @@ export function createEngine(deps: Deps) {
         );
         ({ title, pitch } = idea);
         sourceUrl = url;
-      } else if (text.length > 160) {
+      } else if (text.length > MAX_TITLE_LENGTH) {
         const { idea } = await call(board.id, () => llm.distill({ model: modelFor(board, 'distill'), flow, board, text, lang }));
         ({ title, pitch } = idea);
       }

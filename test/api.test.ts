@@ -92,6 +92,25 @@ const newBoard = async (extra: object = {}) => (await api('POST', '/api/boards',
 const seed = async (boardId: number, text: string) => (await api('POST', `/api/boards/${boardId}/seed`, { text })).data.idea;
 const lastCall = (schema: string) => [...calls].reverse().find((c) => c.schemaName === schema)!;
 
+test('a seed longer than a title (121-160 characters) is distilled instead of cut off mid-sentence', async () => {
+  const board = await newBoard({ goal: 'g' });
+  const middling = 'Lånecyklar vid busshållplatser. '.repeat(4).trim();
+  assert.ok(middling.length > 120 && middling.length <= 160);
+  const before = calls.length;
+  const long = await seed(board.id, middling);
+  await engine.idle();
+  assert.ok(calls.slice(before).some((c) => c.schemaName === 'seed'), 'the model rewrites it into a title and a pitch');
+  assert.equal(long.title, 'Destillerat frö');
+  assert.notEqual(long.pitch, '', 'the pitch is not left empty');
+
+  const fits = 'a'.repeat(120);
+  const mark = calls.length;
+  const whole = await seed(board.id, fits);
+  await engine.idle();
+  assert.equal(whole.title, fits, 'a seed that fits in a title is kept whole');
+  assert.ok(!calls.slice(mark).some((c) => c.schemaName === 'seed'), 'and needs no rewrite');
+});
+
 test('full loop: seed → background judge → expand → combine → export', async () => {
   judgeScores = { originality: 3, feasibility: 3, impact: 3 };
   const board = await newBoard({ goal: 'Färre bilresor i staden' });
